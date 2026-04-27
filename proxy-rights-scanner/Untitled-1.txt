@@ -1,0 +1,32 @@
+// types/index.ts
+export interface ProxyRight {
+  id: string;
+  category: string;     // 예: "금융기관 거래", "부동산 관리" 등
+  description: string;  // 대리권의 상세 범위 및 내용
+}
+
+export interface DocumentData {
+  documentId: string;
+  imageUrl: string;
+  proxyRights: ProxyRight[];
+  analyzedAt: string; // ISO 8601 날짜 문자열
+}
+proxy-rights-scanner/
+├── app/
+│   ├── api/
+│   │   └── analyze/
+│   │       └── route.ts       # (서버) Gemini API 호출 및 Firestore 저장 라우트
+│   ├── layout.tsx             # 앱 전역 레이아웃
+│   └── page.tsx               # 메인 페이지 (Uploader, ResultDisplay 조합)
+├── components/
+│   ├── ImageUploader.tsx      # (클라이언트) 사진 선택 및 Firebase Storage 업로드 UI
+│   ├── ResultDisplay.tsx      # (클라이언트) AI가 데이터화한 대리권 목록 렌더링
+│   └── LoadingState.tsx       # 분석 및 통신 중 보여줄 로딩 스피너/스켈레톤
+├── lib/
+│   ├── firebase.ts            # Firebase 초기화 및 Storage/Firestore 인스턴스 내보내기
+│   └── gemini.ts              # Gemini 1.5 Flash 호출 및 프롬프트 관리 유틸리티
+├── types/
+│   └── index.ts               # 타입스크립트 인터페이스 (대리권 데이터 구조 등)
+├── .env.local                 # 환경 변수 (Firebase 설정 값, Gemini API Key)
+├── tailwind.config.ts
+└── tsconfig.json
