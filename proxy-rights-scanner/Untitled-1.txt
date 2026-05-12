@@ -1,32 +1,318 @@
-// types/index.ts
-export interface ProxyRight {
-  id: string;
-  category: string;     // 예: "금융기관 거래", "부동산 관리" 등
-  description: string;  // 대리권의 상세 범위 및 내용
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+// 환경변수에 설정된 API 키를 사용합니다.
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+/**
+ * 다양한 경험 텍스트를 분석하여 직무 역량 점수로 환산하는 함수
+ * @param {string} experienceText - 예: "피자집 서빙 알바 6개월, 주 20시간, 결근 없음"
+ * @returns {Promise<Object>} - 경험 타입과 환산된 점수 배열을 포함하는 객체
+ */
+export async function analyzeExperience(experienceText: string) {
+  // 최신 모델인 Gemini 1.5 Flash를 사용 (비용 효율적이고 빠름)
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+  const prompt = `
+    당신은 커리어 컨설턴트 및 HR 전문가입니다.
+    유저가 입력한 다음 경험 텍스트를 분석하여 경험의 종류(알바, 인턴, 동아리, 프로젝트 등)를 분류하고, 직무 역량 점수(0~100)로 환산해 주세요.
+
+    [유저 경험]: "${experienceText}"
+
+    평가 항목: CS(고객응대), 성실성, 문제해결능력, 협업능력.
+    유저 경험에서 도출할 수 있는 항목만 평가해 주고, 점수 산출의 '이유'를 한 줄로(reason 필드) 함께 제공해 주세요.
+    반드시 아래 JSON 객체 형식으로만 응답해야 하며, 백틱이나 다른 텍스트는 포함하지 마세요.
+    {
+      "type": "알바", // 알바, 인턴, 동아리, 프로젝트, 기타 등 문맥을 파악하여 적절한 단어로 분류
+      "scores": [
+        {"category": "성실성", "score": 95, "reason": "결근 없이 꾸준하게 근무한 점을 높게 평가함"},
+        {"category": "CS", "score": 80, "reason": "고객 응대 업무를 원활히 수행함"}
+      ]
+    }
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const text = await result.response.text();
+    
+    // AI 응답에서 마크다운(```json)이 섞여 나올 경우를 대비한 클렌징 로직
+    const cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    
+    const parsedData = JSON.parse(cleanText);
+    return parsedData;
+
+  } catch (error) {
+    console.error("역량 분석 중 오류 발생:", error);
+    // 폴백(Fallback) 데이터 반환
+    return { type: "기타", scores: [] };
+  }
 }
 
-export interface DocumentData {
-  documentId: string;
-  imageUrl: string;
-  proxyRights: ProxyRight[];
-  analyzedAt: string; // ISO 8601 날짜 문자열
+// 실행 예시
+import React, { useState, useEffect } from 'react';
+import ExperienceForm from './components/ExperienceForm';
+import TimelineList, { TimelineItem } from './components/TimelineList';
+import ExperienceModal from './components/ExperienceModal';
+
+export default function CareerTimeline() {
+  const [timelineData, setTimelineData] = useState<TimelineItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  // 필터링 상태 추가
+  const [activeFilter, setActiveFilter] = useState('전체');
+  const [selectedItem, setSelectedItem] = useState<TimelineItem | null>(null); // 모달에 표시할 선택된 아이템 상태
+  const [remainingLimit, setRemainingLimit] = useState<number>(3); // 남은 분석 횟수 상태
+
+  // 경험 타입에 따른 아이콘을 반환하는 헬퍼 함수
+  const getIconForExperienceType = (type: string) => {
+    switch (type) {
+      case '알바': return '🍕';
+      case '인턴': return '💼';
+      case '동아리': return '🤝';
+      case '프로젝트': return '💡';
+      case '기타': return '✨';
+      default: return '✨';
+    }
+  };
+
+  useEffect(() => {
+    const fetchExperiences = async () => {
+      try {
+        // 실제 애플리케이션에서는 로그인된 사용자의 ID를 가져와야 합니다.
+        // 여기서는 예시로 userId를 1로 하드코딩합니다.
+        const userId = 1; 
+        const response = await fetch(`/api/experiences?userId=${userId}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const { experiences, remainingLimit: fetchedLimit } = await response.json();
+        setRemainingLimit(fetchedLimit ?? 3); // 서버에서 잔여 횟수 받아오기
+
+        // API에서 받아온 데이터를 UI에 맞게 변환
+        const formattedData = experiences.map(item => ({
+          id: item.id,
+          type: 'experience', // 모든 경험 이력은 'experience' 타입으로 간주
+          experienceType: item.type, // AI가 분류한 경험 종류 (알바, 인턴 등)
+          title: item.title,
+          date: item.duration, // DB의 duration 필드를 날짜/기간 정보로 사용
+          description: item.description, // 모달에서 보여줄 상세 내용 데이터 추가
+          skills: item.scores.map(score => ({
+            text: `${score.category} ${score.score}`,
+            reason: score.reason
+          })),
+          icon: getIconForExperienceType(item.type),
+          highlight: false, // 필요에 따라 동적으로 설정 가능
+        }));
+
+        // TODO: 배지 데이터도 API에서 가져와서 formattedData와 병합하고 날짜순으로 정렬하는 로직 추가
+        setTimelineData(formattedData);
+      } catch (e) {
+        setError(e.message);
+        console.error("경험 이력을 불러오는 데 실패했습니다:", e);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchExperiences();
+  }, []); // 빈 배열은 컴포넌트가 마운트될 때 한 번만 실행됨을 의미
+
+  const handleAddExperienceSuccess = (newItem: any) => {
+    const formattedItem = {
+      id: newItem.id,
+      dbId: newItem.id, // 삭제/수정을 위해 실제 DB ID도 보관
+      type: 'experience',
+      experienceType: newItem.type,
+      title: newItem.title,
+      date: newItem.duration,
+      description: newItem.description,
+      skills: newItem.scores.map(score => ({
+        text: `${score.category} ${score.score}`,
+        reason: score.reason
+      })),
+      icon: getIconForExperienceType(newItem.type),
+      highlight: true,
+    };
+    setTimelineData(prev => [formattedItem, ...prev]);
+    setRemainingLimit(prev => Math.max(0, prev - 1)); // 추가 성공 시 잔여 횟수 차감
+  };
+
+  const handleUpdateType = async (item: TimelineItem, newType: string) => {
+    try {
+      const response = await fetch('/api/experiences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.dbId || item.id, type: newType }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('타입 수정에 실패했습니다.');
+      }
+
+      // 타임라인 상태 업데이트 (아이콘도 새 타입에 맞춰 변경)
+      setTimelineData(prev => prev.map(i => {
+        if (i.id === item.id) {
+          return { ...i, experienceType: newType, icon: getIconForExperienceType(newType) };
+        }
+        return i;
+      }));
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  const handleDelete = async (item: TimelineItem) => {
+    if (!window.confirm(`'${item.title}' 기록을 정말로 삭제하시겠습니까?`)) return;
+
+    // id와 dbId 중 유효한 고유 식별자를 사용
+    const targetId = item.dbId || item.id; 
+    try {
+      const response = await fetch(`/api/experiences?id=${targetId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('데이터 삭제에 실패했습니다.');
+      }
+
+      // 삭제 성공 시 타임라인 상태에서 제거하고 모달 닫기
+      setTimelineData(prev => prev.filter(i => i.id !== item.id));
+      if (selectedItem?.id === item.id) setSelectedItem(null);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  // 필터링 적용 로직
+  const filteredData = timelineData.filter(item => {
+    if (activeFilter === '전체') return true;
+    if (activeFilter === '배지') return item.type === 'badge';
+    return item.experienceType === activeFilter;
+  });
+
+  if (loading) {
+    return <div className="max-w-md mx-auto p-4 bg-slate-50 min-h-screen font-sans">타임라인을 불러오는 중...</div>;
+  }
+
+  if (error) {
+    return <div className="max-w-md mx-auto p-4 bg-slate-50 min-h-screen font-sans">에러 발생: {error}</div>;
+  }
+
+  return (
+    <div className="max-w-md mx-auto p-4 bg-slate-50 min-h-screen font-sans">
+      <div className="mb-8">
+        <h2 className="text-2xl font-extrabold text-slate-800">내 커리어 타임라인</h2>
+        <p className="text-sm text-slate-500 mt-1">알바부터 실무 과제까지, 나의 성장 기록</p>
+      </div>
+
+      {/* 경험 추가 폼 */}
+      <ExperienceForm onSuccess={handleAddExperienceSuccess} remainingLimit={remainingLimit} />
+
+      {/* 타임라인 필터 */}
+      <div className="flex flex-wrap gap-2 mb-6">
+        {['전체', '배지', '알바', '인턴', '동아리', '프로젝트', '기타'].map(filter => (
+          <button
+            key={filter}
+            onClick={() => setActiveFilter(filter)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+              activeFilter === filter
+                ? 'bg-slate-800 text-white shadow-sm'
+                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            {filter}
+          </button>
+        ))}
+      </div>
+
+      {/* 타임라인 컨테이너 */}
+      <TimelineList 
+        items={filteredData} 
+        onUpdateType={handleUpdateType} 
+        onDelete={handleDelete} 
+        onItemClick={setSelectedItem} 
+      />
+
+      {/* 상세 보기 모달 (Modal) */}
+      <ExperienceModal item={selectedItem} onClose={() => setSelectedItem(null)} />
+    </div>
+  );
 }
-proxy-rights-scanner/
-├── app/
-│   ├── api/
-│   │   └── analyze/
-│   │       └── route.ts       # (서버) Gemini API 호출 및 Firestore 저장 라우트
-│   ├── layout.tsx             # 앱 전역 레이아웃
-│   └── page.tsx               # 메인 페이지 (Uploader, ResultDisplay 조합)
-├── components/
-│   ├── ImageUploader.tsx      # (클라이언트) 사진 선택 및 Firebase Storage 업로드 UI
-│   ├── ResultDisplay.tsx      # (클라이언트) AI가 데이터화한 대리권 목록 렌더링
-│   └── LoadingState.tsx       # 분석 및 통신 중 보여줄 로딩 스피너/스켈레톤
-├── lib/
-│   ├── firebase.ts            # Firebase 초기화 및 Storage/Firestore 인스턴스 내보내기
-│   └── gemini.ts              # Gemini 1.5 Flash 호출 및 프롬프트 관리 유틸리티
-├── types/
-│   └── index.ts               # 타입스크립트 인터페이스 (대리권 데이터 구조 등)
-├── .env.local                 # 환경 변수 (Firebase 설정 값, Gemini API Key)
-├── tailwind.config.ts
-└── tsconfig.json
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               Int               @id @default(autoincrement())
+  email            String            @unique
+  name             String
+  experienceHistories ExperienceHistory[]
+  badges           Badge[]
+  tasks            Task[]            @relation("UserTasks")
+}
+
+model Company {
+  id      Int    @id @default(autoincrement())
+  name    String
+  tasks   Task[]
+}
+
+model Task {
+  id        Int      @id @default(autoincrement())
+  companyId Int
+  title     String   // 예: 마케팅 기획 과제
+  company   Company  @relation(fields: [companyId], references: [id])
+  users     User[]   @relation("UserTasks")
+  badge     Badge?
+}
+
+// 다양한 경험 이력 테이블 (알바, 인턴, 동아리 등)
+model ExperienceHistory {
+  id          Int               @id @default(autoincrement())
+  userId      Int
+  user        User              @relation(fields: [userId], references: [id])
+  type        String            // 예: '알바', '인턴', '동아리' 등
+  title       String            // 예: 피자집 서빙 알바, 스타트업 마케팅 인턴
+  duration    String            // 예: 6개월
+  description String            // 예: 주 20시간, 결근 없음
+  createdAt   DateTime          @default(now()) // 정렬을 위한 생성일
+  scores      CompetencyScore[] // 정량화된 역량 점수 (1:N 매핑)
+}
+
+// AI로 변환된 직무 역량 점수 테이블
+model CompetencyScore {
+  id                  Int               @id @default(autoincrement())
+  experienceHistoryId Int
+  experienceHistory   ExperienceHistory @relation(fields: [experienceHistoryId], references: [id])
+  category            String            // 예: CS, 성실성, 문제해결
+  score               Int               // 0~100 점수
+  reason              String?           // 점수 산출 이유 (툴팁용)
+}
+
+// 디지털 배지
+model Badge {
+  id     Int    @id @default(autoincrement())
+  taskId Int    @unique
+  task   Task   @relation(fields: [taskId], references: [id])
+  userId Int
+  user   User   @relation(fields: [userId], references: [id])
+  imageUrl String // 배지 이미지 URL
+  createdAt DateTime @default(now()) // 정렬을 위한 생성일
+}
+
+// AI 분석 일일 사용량 제한을 위한 테이블
+model DailyUsage {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique // 각 사용자는 하나의 일일 사용량 기록을 가집니다.
+  user      User     @relation(fields: [userId], references: [id])
+  date      DateTime @default(now()) @db.Date // 사용량이 기록된 날짜 (시간 제외)
+  count     Int      @default(0) // 해당 날짜에 AI를 호출한 횟수
+}
+}
